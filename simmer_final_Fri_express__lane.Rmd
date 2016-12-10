@@ -1,0 +1,452 @@
+---
+title: "Biostat 213 Final Project Report"
+output:
+  html_notebook: default
+  pdf_document: default
+  word_document: default
+---
+#Queueing system simulation:
+#Tianran Zhang 404538863
+###Introduction
+
+####In my previous work on midterm project, for different system settings the process had to be redefined, which involved a lot of code repetition.
+
+####I have always been thinking if we can adapt the codes with more flexibility and less redundancy when we want to simulate queueing system with different mechanisms.
+
+####It seems that the best way is to have classes for customers and queues predefined with reasonable properties and functionalities,  plus a whole queueing model object that manipulates customer/ queues with different rules. Each time when we want to simulate a new model, we just need to construct a new queueing model object and call its looping function with parameters defining the altered rules.
+
+####This means that object-oriented programming is needed to build up the framework for the system.
+
+####I had experience in both R and Python, but only in a non-object-oriented way.
+
+####When I started doing this,it was really hard to even start building a simple queueing system as I need to try everything from scratch.
+
+#### I then looked into some other existing applications in R that might be useful for implementing these queueing system in a more elegant way. 
+
+--------------------------------------
+
+###I was able to accomplish:
+###    (1) utilize process oriented package simmer to simulate the three teller models
+###    (2) Analyze tandem system with different teller speeds based on the Midterm project work.
+###    (3) Design preliminary object-oriented programs in python for future simulation systems (hoping to make-up for lost credits)
+
+
+###Simmer package: process-oriented
+
+####I first found Simmer (https://cran.r-project.org/web/packages/simmer/index.html).
+####It is a process-oriented and trajectory-based Discrete-Event Simulation (DES) package for R.
+
+####I first used it to simulate the proposed two models in question (1).
+
+
+#(1) 3-teller system:  one-line versus 3 separate lines
+#### Like what I did in the midterm projet, some basic parameter are set as follows:
+####- Simulation time: 
+####    0:480 (min)/ 0:8 (hr): Bank is open and the customers can enter from opening to the 8th hr.
+####    480:540(min)/ 8:9 (hr):Bank is closed but customer already entered will be served until the 9th hr.
+#### I added the counter closing time on top of the bank closing time because I noticed that without this regulation, the tellers will need to work until/ over mid-night, which is not possible/ reasonable in real-life situations. This will restrict the daily working hours for each teller in bank
+#### Serving time: In both systems I set the serving time experienced to be rexp(1,rate=0.05) as I assume that the three tellers have the same working ability.
+####- Customer arrival: The inter-arrival time between customers was sampled from uniform distribution 
+####10*runif(1)
+
+#### The two systems will be evaluated on average waiting times/ time in queueing system for the customer served in 50 days.
+
+###One-line, 3 tellers simulation
+####For the one-line, 3 tellers situation, the customer's trajectory is: wait in line until get served by one of the three counters that becomes available, add service time, and do 'release counter' to let the current customer leave the bank.
+
+
+
+##Define the customer/ bank behaviors.
+```{r}
+library(dplyr)
+library(simmer)
+
+set.seed(9999)
+customer <- 
+  create_trajectory("Customer's path") %>%
+  seize("counter") %>%
+  timeout(function() {rexp(1,rate=0.05)}) %>%
+  release("counter")
+
+bank <- 
+  simmer("bank") %>% 
+  add_resource("counter", 3) %>%
+  #customer arrival interval randomly generated
+  add_generator("Customer", customer, from_to(0,480, function() (10*runif(1)),arrive=FALSE))%>% 
+  run(until = 540) 
+
+```
+
+##Simulate just for a single day: 
+```{r}
+a<-bank %>% 
+get_mon_arrivals %>%
+mutate(wait_time = end_time - start_time -activity_time,t_sys= end_time-start_time) %>%
+arrange(wait_time)
+
+cat("wait_time:  ", mean(a$wait_time),'\n')
+cat("system time:", mean(a$t_sys))
+
+```
+```{r}
+a
+```
+
+###The average waiting time for customers during the day is 71.5 mins (a bit longer than 1 hr)
+###The average time each customer spent in system is 89.2 mins.
+###Now we can check the system logs for each customer for more detailed tracking/ analysis by calling 'a', which is a dataframe storing starting/ ending/ activity/ waiting/ system time logs for all customers served.
+
+
+##For a statistical valid result, I conducted a simulation with 50 replications (50 days when the bank is open):
+
+```{r}
+wait<-numeric()
+sys<-numeric()
+for (i in 1:50){
+
+customer <- 
+  create_trajectory("Customer's path") %>%
+  seize("counter") %>%
+  timeout(function() {rexp(1,rate=0.05)}) %>%
+  release("counter")
+
+bank <- 
+  simmer("bank") %>% 
+  add_resource("counter", 3) %>%
+  #customer arrival interval randomly generated
+  add_generator("Customer", customer, from_to(0,480, function() (10*runif(1)),arrive=FALSE))
+                                              
+bank %>% run(until = 540) 
+
+
+#simulate the same routine for 50 days to get stable measures.
+  a<-bank %>% 
+  get_mon_arrivals %>%
+  mutate(wait_time = end_time - start_time -activity_time,t_sys= end_time-start_time) %>%
+  arrange(wait_time)
+wait[i]<-mean(a$wait_time)
+sys[i]<-mean(a$t_sys)
+}
+
+cat("wait_time:  ", sum(wait)/50, '\n')
+cat("system time:", sum(sys)/50)
+```
+#### Averaged perfrance for this system shown above..
+
+
+
+
+###3 line, 3 tellers simulation
+
+####For the 3-line, 3 tellers situation, the customer's trajectory is: first select a counter, wait in line until the selected counter becomes available, add service time, and do 'release selected counter' to let the current customer leave the bank and free the resource (counter).
+
+```{r}
+library(dplyr)
+library(simmer)
+
+
+wait<-numeric()
+sys<-numeric()
+for (i in 1:50){
+
+set.seed(1014)
+
+customer <- 
+  create_trajectory("Customer's path") %>%
+  simmer::select(c("counter1", "counter2","counter3"), policy = "shortest-queue") %>%
+  seize_selected %>%
+  timeout(function() {rexp(1,rate=0.05)}) %>%
+  release_selected
+
+bank <- 
+  simmer("bank") %>% 
+  add_resource("counter1", 1) %>%
+  add_resource("counter2", 1) %>%
+  add_resource("counter3", 1) %>%
+
+  add_generator("Customer", customer, from_to(0,480, function() (10*runif(1)),arrive=FALSE))
+
+bank %>% run(until = 540) 
+
+a<-bank %>% 
+  get_mon_arrivals %>%
+  mutate(wait_time = end_time - activity_time-start_time,t_sys= end_time-start_time) %>%
+  arrange(wait_time)
+
+wait[i]<-mean(a$wait_time)
+sys[i]<-mean(a$t_sys)
+}
+
+cat("wait_time:  ", sum(wait)/50, '\n')
+cat("system time:", sum(sys)/50)
+
+```
+
+##Analysis:
+
+####From these simulation results, the system with one single line had slightly lower waiting time/ system time reported.
+
+####The multiple line system wastes the counter(teller) resource in some cases, an extrme one is when one line is completely empty, that is not making the best use if there space and labor.
+####For the jockeying situation in the question, it will only improve the multiple line model performance given that there is time (a lot) when one counter not serving customers/ only serving small number of customers.This is where jockeying is utilizing the wasted resource and reducing waiting time for the customers.
+
+####Although I was not able to simulate the jockeying cases for both of the first and last customer switching rules. Based on the logs for the simulated systems, I have the assumption that allowing customer who has just arrived to switch is in general going to improve the model performance more greatly than just letting the first customer in line to switch. As the longest waiting times tends to follow customers who arrived later.
+
+####I believe that by proper handling of the jockeying rules, combined with the special rule that opens a temporary counter when the line length exceeds the limit, the three-line model can finally be nearly equivalent to the one-line system.
+
+####But I also want to argue that in a real life syetem, without adding additional resources, the multiple line system can't become equivalent to the one-line system, due the time cost by jockeying as well as the unstableness of people's incentives. 
+
+
+##Additional notes: Despite the performance disadvantages simulated above, for practical consideration, multiple line model should be considered when the single line configuration is innapropriate due to space limit or when specialized teller is involved (special business counter, express lane at Ralph's, etc.)
+
+
+#(2)In the tandem system, does it matter where you put the slowest teller?  That is, does the expected waiting time change if the slowest teller is teller 1 or teller 2 or teller 3?
+
+##Following codes are adapted from the midterm tandem codes, we set the longer service time as rexp(1,rate=6), shorter service time as 0.5*rexp(1, rate=6). We investigate the difference in average waiting times when the slower teller is placed at location 1, 2 or 3.  
+
+```{r}
+#  exercise for the tandem server system
+i<-numeric(1)
+num1<-NULL
+avgwait1<-NULL
+totalavg1<-0
+
+
+rate1 = rexp(1, rate=5)  
+#[1] 0.08354425     #[1] 3.564901   #kuai0.1270624  #man 0.4169861
+#[1] 378544
+rate2 =rexp(1,rate=6) 
+#[1] 0.31974         #[1] 1.254891  #1.584766       # 2.38005
+#[1] 378521         
+rate3 = rexp(1,rate=5) 
+#[1] 0.7685823       #[1] 6.856712  #1.036682       # 2.789977
+#[1] 378639
+for (i in 1:50){
+  # initialize
+  
+  T<-9
+  u1<-numeric(1)
+  Tt<-numeric(1)
+  y1<-0
+  y2<-0
+  y3<-0
+  T0<-0
+  ta<-0
+  t<-0
+  t1<-0
+  t2<-0
+  t3<-0
+  
+  A1<-NULL
+  A2<-NULL
+  A3<-NULL
+  D1<-NULL
+  Na<-0
+  Nd<-0
+  n1<-0
+  n2<-0
+  n3<-0
+  
+  #  T0 subroutine
+  #  this uses a homogeneous Poisson process with rate 4 in the morning and afternoon
+  #  and a rate of 6 between noon and 1pm (hours 4 and 5)
+  
+  
+  if (t<4 | t>5){
+    u1<-runif(1)
+    Tt<-t-((1/4)*log(u1))
+    T0<-Tt
+  }
+  if (4<=t & t<=5){
+    u1<-runif(1)
+    Tt<-t-((1/6)*log(u1))
+    T0<-Tt
+  }
+  #  end subroutine
+  
+  ta<-T0
+  t1<-2^32
+  t2<-2^32
+  t3<-2^32
+  
+  
+  #  open case 1.* 
+  #  This is for the time when the bank is open
+  
+  if (ta<T){
+    while (ta<T){
+      
+      #  case 1.1:  ta happens first
+      if (ta==min(ta,t1,t2,t3)){
+        t<-ta
+        Na<-Na+1
+        n1<-n1+1
+        if (t<4 | t>5){
+          u1<-runif(1)
+          Tt<-t-((1/4)*log(u1))
+          ta<-Tt
+        }
+        if (4<=t & t<=5){
+          u1<-runif(1)
+          Tt<-t-((1/6)*log(u1))
+          ta<-Tt
+        }
+        if (n1==1){
+          y1<-rate1
+          t1<-t+y1
+        }
+        A1[Na]<-t
+      }
+      
+      # case 1.2:  t1 happens first
+      if (t1<ta & t1<=t2 & t1<=t3){
+        t<-t1
+        n1<-n1-1
+        n2<-n2+1
+        if (n1==0){
+          t1<-2^32
+        }
+        if (n1>0){
+          y1<-rate1
+          t1<-t+y1
+        }
+        if (n2==1){
+          y2<-rate2
+          t2<-t+y2
+        }
+        A2[Na-n1]<-t
+      }
+      
+      # case 1.3:  t2 happens first
+      if (t2<ta & t2<t1 & t2<=t3){
+        t<-t2
+        n2<-n2-1
+        n3<-n3+1
+        if (n2==0){
+          t2<-2^32
+        }
+        if (n2>0){
+          y2<-rate2
+          t2<-t+y2
+        }
+        if (n3==1){
+          y3<-rate3
+          t3<-t+y3
+        }
+        A3[Na-n1-n2]<-t
+      }
+      
+      # case 1.4:  t3 happens first
+      if (t3<ta&t3<t2 & t3<t1){
+        t<-t3
+        n3<-n3-1
+        Nd<-Nd+1
+        if (n3==0){
+          t3<-2^32
+        }
+        if (n3>0){
+          y3<-rate3
+          t3<-t+y3
+        }
+        D1[Nd]<-t
+      }
+      #  close case 1.*
+    }
+  }
+  
+  
+  #  open case 2
+  #  this is for the end of the day
+  #  those already in the bank will get processed
+  #  no one new can enter
+  
+  if (ta>T & (n1!=0 | n2!=0 | n3!=0)){
+    while (n1!=0|n2!=0|n3!=0){
+      
+      # case 2.1:  t1 happens first
+      if (t1<=t2 & t1<=t3){
+        t<-t1
+        n1<-n1-1
+        n2<-n2+1
+        if (n1==0){
+          t1<-2^32
+        }
+        if (n1>0){
+          y1<-rate1
+          t1<-t+y1
+        }
+        if (n2==1){
+          y2<-rate2
+          t2<-t+y2
+        }
+        A2[Na-n1]<-t
+      }
+      
+      # case 2.2:  t2 happens first
+      if (t2<t1 & t2<=t3){
+        t<-t2
+        n2<-n2-1
+        n3<-n3+1
+        if (n2==0){
+          t2<-2^32
+        }
+        if (n2>0){
+          y2<-rate2
+          t2<-t+y2
+        }
+        if (n3==1){
+          y3<rate3
+          t3<-t+y3
+        }
+        A3[Na-n1-n2]<-t
+      }
+      
+      # case 2.3:  t3 happens first
+      if (t3<t2 & t3<t1){
+        t<-t3
+        Nd<-Nd+1
+        D1[Nd]<-t
+        n3<-n3-1
+        if (n3==0){
+          t3<-2^32
+        }
+        if (n3>0){
+          y3<-rate3
+          t3<-t+y3
+        }
+      }
+      #  close case 2.*
+    }
+  }
+  # iteration of the simulation
+  avgwait1[i]<-mean(D1-A1)
+  num1[i]<-Nd
+  i=i+1
+}
+
+#  output:  average waiting time per simulation
+#  output:  average wait time for everyone in the simulation
+
+totalavg1<-sum(num1*avgwait1)/sum(num1)
+totalavg1
+
+sum(num1)
+
+
+```
+
+
+##Analysis: 
+###By running each simulation for 10000 times,  I recorded the average time in system when: 
+###   - teller 1 is slow: [1] 0.08354425
+###   - teller 2 is slow: [1] 0.31974
+###   - teller 3 is slow: [1] 0.7685823
+
+
+### Conclusion: The results shows that the location arrangement of tellers with different speed matters in the tandem system. It is better to place the slower teller at intial positions rather than putting him/she into the last position. This makes sense as if the last teller is really slow, having him/her on the latter position will trap a lot many customers in the system, waiting even before the first teller.
+
+
+#Additional work:
+
+##Since I wasn't able to fully simulate the jockeying part of the three teller simulation and I really want to do something to make up for it: I did some Object-oriented system design in Python, which I am more familiar with. This work is reusable for more flexible future model developments.
+
+####This is a system with basic functionality completed. Other features to be added: preemption/ jockeying.
